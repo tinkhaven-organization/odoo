@@ -1,41 +1,63 @@
-with import <nixpkgs> {};
-let 
-  name = "odoo-tink"; 
-  preConfigure = "set -x";
-  unpackPhase = ''
-    echo "Unpack Phase"
-  '';
+{ pkgs ? (import <nixpkgs> {}), lib ? pkgs.lib, pythonPackages ? "python27Packages" }:
+let
+  inherit (lib) filterAttrs mapAttrs attrValues;
+  basePythonPackages = with builtins; if isAttrs pythonPackages
+    then pythonPackages
+    else getAttr pythonPackages pkgs;
 
-in buildPythonPackage {
-  name = "odoo-tink";
-  buildInputs = [ 
-    pkgs.python27Packages.pillow 
-    pkgs.python27Packages.mock 
-    pkgs.python27Packages.setuptools 
-    pkgs.python 
-    pkgs.libxml2 
-    pkgs.libyaml 
-    pkgs.libjpeg_original 
-    pkgs.libxslt 
-    pkgs.openldap 
-    pkgs.cyrus_sasl 
-    pkgs.postgresql 
-    pkgs.libtiff 
-    pkgs.freetype 
-    pkgs.python27Packages.gevent
-    pkgs.python27Packages.distutils_extra
-  ];
-  src = null;
-  # gcc won't find sasl.h if it's not in the include part
-  NIX_CFLAGS_COMPILE = "-I${pkgs.cyrus_sasl}/include/sasl -I${pkgs.libxml2}/include/libxml -I${pkgs.libyaml} -I${pkgs.libjpeg_original}";
+  elem = builtins.elem;
+  basename = path: with pkgs.lib; last (splitString "/" path);
 
-  doCheck = false;
-  # When used as `nix-shell --pure`
-  #shellHook = ''
-  #  touch /tmp/buildPython
-  #'';
-  # used when building environments
-  #extraCmds = ''
-  #   touch /tmp/buildPython
-  #'';
-}
+  src-filter = path: type:
+    with pkgs.lib;
+    !elem (basename path) [".git" "odoo.egg-info" "_bootstrap_env" "result" "__pycache__" ".eggs"] &&
+    (last (splitString "." path) != "pyc") &&
+    (last (splitString "." path) != "po") &&
+    (last (splitString "." path) != "jpg") &&
+    (last (splitString "." path) != "png")
+    ;
+
+  odoo-tink-src = builtins.filterSource src-filter ./.;
+
+  localOverrides = pythonPackages: {
+    # odoo-tink = pythonPackages.odoo-tink.override (odoo-tink: {
+    #   src = odoo-tink-src;
+    #   buildInputs = [] ++ odoo-tink.buildInputs;
+    # });
+  };
+
+  pythonPackagesWithLocals = basePythonPackages.override (a: {
+    self = pythonPackagesWithLocals;
+  })
+  // (scopedImport {
+        self = pythonPackagesWithLocals;
+        super = basePythonPackages;
+        inherit pkgs;
+        inherit (pkgs) fetchurl;
+      } ./python-packages.nix)
+  ;
+
+  myPythonPackages = 
+    (pythonPackagesWithLocals
+    // (localOverrides pythonPackagesWithLocals));
+  myAttrNames = builtins.attrNames myPythonPackages;
+  myFilteredPkgs = builtins.filter (key: key != "avro3k") myAttrNames;
+  #myFilteredPythonPkgs = filterAttrs (k: v: k != "avro3k") myPythonPackages;
+  myFilteredPythonPkgs = attrValues (filterAttrs (k: v: k != "avro3k") myPythonPackages);
+
+  odoo-tink = with pkgs.python27Packages; builtins.trace myFilteredPythonPkgs pkgs.buildPythonPackage {
+    name = "odoo-tink-8.0.0";
+    buildInputs = [
+      setuptools
+      mock
+      pkgs.libxml2
+      pkgs.libyaml
+    ];
+    # propagatedBuildInputs = myFilteredPkgs;
+    # propagatedBuildInputs = myFilteredPythonPkgs;
+    doCheck = false;
+    src = odoo-tink-src;
+    my-var = myFilteredPkgs;
+  };
+
+in odoo-tink
